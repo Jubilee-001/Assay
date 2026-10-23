@@ -45,7 +45,7 @@ Every Go package, its responsibility, and the boundary it must respect.
 | `cmd/attestfixture` | Derives `attest()` arguments from one labelled fixture for the local-network end-to-end test. | Offline test helper; reads fixtures through `internal/eval` and never fetches a source. |
 | `cmd/eval` | Records and diffs the labelled eval baseline. | Offline; reads fixtures through `internal/eval`. |
 | `cmd/refreshfixture` | Re-captures corpus fixtures from recorded live source URLs to detect upstream drift. | Offline maintenance only; never run in CI or live scan. |
-| `internal/api` | HTTP API (`/api/v1/scan`, `/api/v1/history`, `/healthz`) and the embedded single-file UI. | Inbound HTTP only. Does not fetch sources; it calls the scanner. Its one `horizon` import is the `ErrNotFound` sentinel, not a fetch. |
+| `internal/api` | HTTP API (`/api/v1/scan`, `/api/v1/history`, `/healthz`) and the embedded single-file UI. | Serves inbound HTTP and reports registry freshness through `internal/registry`; scan sources remain delegated to the scanner. |
 | `internal/attester` | Attested-set config, the dry-run pass and its exit codes, the dry-run diff, and the issuer watcher. | Calls the scanner (or replays fixtures through `internal/eval`) and reads Horizon operations through `internal/horizon`. No key material and no transaction submission. |
 | `internal/assetlist` | Fetches and parses SEP-0042 Stellar Asset Lists to provide curated asset metadata and claims. | Outbound HTTP. Leaf package; called by `internal/scan`. |
 | `internal/cache` | Thread-safe in-memory TTL cache for HTTP responses and reputation queries. | No I/O. In-memory storage only; leaf package used by `internal/stellarexpert`. |
@@ -94,10 +94,13 @@ Two directions are worth stating explicitly because they are load-bearing:
 flowchart TD
     CMDASSAY["cmd/assay"] --> API["internal/api"]
     CMDASSAY --> ATTEST["internal/attest"]
+    CMDASSAY --> ATTSTER["internal/attester"]
     CMDASSAY --> BUNDLE["internal/bundle"]
     CMDASSAY --> HIST["internal/history"]
     CMDASSAY --> MECH["internal/mechanics"]
+    CMDASSAY --> REG["internal/registry"]
     CMDASSAY --> SCAN["internal/scan"]
+    CMDASSAY --> SAC["internal/sac"]
 
     CMDATTESTFIXTURE["cmd/attestfixture"] --> ATTEST
     CMDATTESTFIXTURE --> EVAL["internal/eval"]
@@ -109,6 +112,7 @@ flowchart TD
     API --> HIST
     API --> HZ["internal/horizon"]
     API --> MECH
+    API --> REG
     API --> SCAN
     API --> TEMP["internal/temporal"]
 

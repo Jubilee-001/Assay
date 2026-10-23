@@ -247,19 +247,20 @@ paths:
                 example: ok
   /readyz:
     get:
-      summary: Per-upstream readiness check
+      summary: Upstream readiness and registry freshness check
       description: >-
         The HTTP status tracks the body's status: 200 ready; 503 degraded,
-        unavailable, or unknown. No failing probe reports ready.
+        unavailable, or unknown. Registry staleness is informational and does
+        not change readiness.
       responses:
         '200':
-          description: Every checkable upstream is reachable.
+          description: Every checkable scan upstream is reachable.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Readiness'
         '503':
-          description: Degraded, unavailable, or unknown; see status and upstreams.
+          description: A scan upstream is degraded, unavailable, or unknown; see status and upstreams.
           content:
             application/json:
               schema:
@@ -278,7 +279,7 @@ components:
   schemas:
     Readiness:
       type: object
-      required: [status, checked_at, age_secs, upstreams]
+      required: [status, checked_at, age_secs, upstreams, registry_staleness]
       properties:
         status:
           type: string
@@ -308,3 +309,37 @@ components:
                 type: string
               probe_url:
                 type: string
+        registry_staleness:
+          type: object
+          description: Informational registry freshness; does not affect readiness status.
+          required: [status, checked_at, window_secs, asset_count, attested_count, unattested_count, stale_count]
+          properties:
+            status:
+              type: string
+              enum: [current, stale, incomplete, unknown]
+            reason:
+              type: string
+            checked_at:
+              type: string
+              format: date-time
+            window_secs:
+              type: integer
+            asset_count:
+              type: integer
+            attested_count:
+              type: integer
+            unattested_count:
+              type: integer
+            stale_count:
+              type: integer
+            oldest_attestation:
+              type: object
+              required: [asset, attested_at, age_secs]
+              properties:
+                asset:
+                  type: string
+                attested_at:
+                  type: string
+                  format: date-time
+                age_secs:
+                  type: integer
