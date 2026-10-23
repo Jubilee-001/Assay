@@ -39,7 +39,7 @@ stop writing.
 already assumes.** The registry's `attest` requires the admin's authorization,
 and there is no threshold mechanism to use — building one is
 [#88](https://github.com/use-assay/Assay/issues/88) and needs a stated threat
-model ([#52](https://github.com/use-assay/Assay/issues/52)) before a scheme
+model ([#30](https://github.com/use-assay/Assay/issues/30)) before a scheme
 can be chosen. This is a limitation, stated as such in
 [contract-interface.md](contract-interface.md#not-done-yet), and it caps what
 the first pipeline is *for*: it can make the testnet registry useful and
@@ -186,11 +186,79 @@ re-attesting. Three mechanisms, in increasing order of honesty:
    writes to the wrong contract ID.
 
 The runbook for these alerts is [#115](https://github.com/use-assay/Assay/issues/115);
-this design specifies what is observable, not who gets paged.
+source-specific outage response is in [source-outage.md](source-outage.md).
+This design specifies what is observable, not who gets paged.
+
+## The run record
+
+Mechanism 1 above, specified. Every run writes one JSON document; `make attest`
+already writes one per invocation (`scripts/attest-run.sh`, records under
+`attest-runs/`, which is git-ignored and is the operator's to archive).
+
+```json
+{
+  "schema": "assay-attestation-run-v1",
+  "run_id": "20261022T101500Z",
+  "started_at": "2026-10-22T10:15:00Z",
+  "finished_at": "2026-10-22T10:15:12Z",
+  "mode": "manual",
+  "network": "testnet",
+  "contract_id": "CBK4FBIHMDTXCUPE4E3ZDVSFJSCY5FJETTKNIQPN4LFJIKKIBLKIXQ73",
+  "source_account": "assay-attester",
+  "commit": "c831b6b…",
+  "entries": [
+    {
+      "asset": "USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      "sac": "CA2E53VHFZ6YSWQIEIPBXJQGT6VW3VKWWZO555XKRQXYJ63GEBJJGHY7",
+      "status": "attested",
+      "severity": 2,
+      "flags": 18,
+      "evidence_hash": "6a9e…a294",
+      "tx_hash": "3f1c…"
+    }
+  ]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `schema` | string | Always `assay-attestation-run-v1`. A change to this document's shape bumps it. |
+| `run_id` | string | UTC start time, `YYYYMMDDTHHMMSSZ`. Unique per run on one host. |
+| `started_at`, `finished_at` | string | RFC 3339 UTC. |
+| `mode` | string | `manual` (`make attest`) or, once the pipeline exists, `scheduled`. |
+| `network` | string | The registry's network, as passed to `stellar --network`. |
+| `contract_id` | string | The registry written to. Checking it against [deployment.md](deployment.md) catches a run against the wrong contract. |
+| `source_account` | string | The signing identity's name. Never a secret: no seed or key material appears anywhere in a record. |
+| `commit` | string or null | The repository commit the run was made from, when known. |
+| `entries` | array, **at least one** | One per asset, in run order. |
+
+Each entry:
+
+| Field | Present when | Meaning |
+| --- | --- | --- |
+| `asset` | always | `CODE-ISSUER`. |
+| `sac` | when derivable | The SAC address for the registry's network, even for a refused or errored asset, so the record names the address that was not written. |
+| `status` | always | Exactly one of `attested`, `refused`, `errored`. |
+| `severity`, `flags`, `evidence_hash` | the arguments were derived | The values sent (or that would have been sent) to `attest`. |
+| `tx_hash` | `attested` | The submitted transaction. `null` only if the CLI reported success without printing a hash: recorded as such, never guessed. |
+| `reason` | `refused`, `errored` | **Verbatim.** For `refused`, `attest`'s own refusal (undetermined, unevaluated, stale, or the confiscation invariant). For `errored`, the error from the scan, the SAC derivation or the submission. |
+
+The rules, which `scripts/test-attest-run.sh` pins:
+
+- **An empty run is an error.** A run that would produce zero entries exits 2
+  and writes no record, because a record with no entries cannot say what
+  happened to anything.
+- **`refused` is not `errored`.** A refusal is the pipeline working: the report
+  could not honestly be attested. An error means the run could not tell.
+- **The record is written whatever happened.** A run that was refused or failed
+  writes the same record, so the absence of a record is itself the signal that
+  a run did not happen.
+- **Exit codes follow the dry-run's:** 0 if everything was attested, 1 if
+  anything was refused and nothing errored, 2 if anything errored.
 
 ## Dry-run mode
 
-**Specified: `assay-attester --dry-run`.** With the flag set, the pipeline
+**Specified, and implemented in [`cmd/assay-attester`](attester.md): `assay-attester --dry-run`.** With the flag set, the pipeline
 performs the full path — scan, derive `Params` via `FromReport`, including the
 confiscation-invariant and undetermined re-checks, derive the SAC address for
 the target network — and then **stops before signing**. It prints, per asset,
@@ -218,6 +286,10 @@ cmd/assay-attester
   --once               one pass, then exit (the unit schedulers invoke)
   --watch              issuer watcher for event-driven re-attestation
 ```
+
+`--config`, `--dry-run`, `--once` and a read-only `--watch` (it detects and
+reports flag changes; it does not re-attest) are implemented; see
+[attester.md](attester.md). Signing is not.
 
 Per asset, one pass is: `scan` → `mechanics` report → `attest.FromReport` →
 (if unchanged evidence-hash **and** still fresh per
@@ -261,7 +333,7 @@ compromised it.
   control. A consumer that gates *without* verifying hashes is still fully
   exposed to a malicious writer.
 - *It does not survive a scanner downgrade*
-  ([#54](https://github.com/use-assay/Assay/issues/54)). If the attacker
+  ([#104](https://github.com/use-assay/Assay/issues/104)). If the attacker
   controls which code runs, the hash is internally consistent with whatever
   the compromised scanner concluded. Version binding
   ([#40](https://github.com/use-assay/Assay/issues/40)) and check-set binding
@@ -279,7 +351,7 @@ compromised it.
 testnet pipeline demonstrates and exercises the machinery. It does not make
 the registry trustworthy; that requires the multi-attestor work
 ([#88](https://github.com/use-assay/Assay/issues/88)) behind a signed threat
-model ([#52](https://github.com/use-assay/Assay/issues/52)). This document
+model ([#30](https://github.com/use-assay/Assay/issues/30)). This document
 asks for maintainer sign-off on exactly that scope boundary.
 
 ## Verified against live surfaces, 2026-09-25
@@ -312,7 +384,7 @@ asks for maintainer sign-off on exactly that scope boundary.
   key custody ([#150](https://github.com/use-assay/Assay/issues/150), see
   [attester-key.md](attester-key.md)),
   the re-attestation runbook
-  ([#115](https://github.com/use-assay/Assay/issues/115)).
+  ([#145](https://github.com/use-assay/Assay/issues/145)).
 - Whether `undetermined` belongs in the preimage
   ([#43](https://github.com/use-assay/Assay/issues/43)) — irrelevant here,
   because undetermined reports are refused before a preimage would be hashed
