@@ -37,28 +37,8 @@ const version = "v0.1.0"
 // asked for more than this, rather than assuming it.
 const MaxBody = 1 << 20 // 1 MiB
 
-// MaxRedirects bounds how many redirects the fetcher will follow before
-// giving up. It is set explicitly rather than inherited from net/http's default
-// of 10, because the number is part of the security argument: a redirect chain
-// is attacker-controlled, and an unbounded one lets a hostile home_domain keep
-// the scanner chasing hops (or keep rewriting the final URL the claim is
-// attributed to). Five is enough for the ordinary cases — an http-to-https
-// upgrade, a trailing-slash or path-normalization hop, an apex-to-www move —
-// and small enough to read in one place.
+// MaxRedirects bounds how many redirects a stellar.toml fetch may follow.
 const MaxRedirects = 5
-
-const (
-	// FailureConnectionRefused identifies a refused TCP connection.
-	FailureConnectionRefused = "connection-refused"
-	// FailureDNS identifies a DNS resolution failure.
-	FailureDNS = "dns-failure"
-	// FailureTimeout identifies a transport timeout.
-	FailureTimeout = "timeout"
-	// FailureHostRefused identifies a host-policy refusal.
-	FailureHostRefused = "host-refused"
-	// FailureFetch identifies other fetch failures.
-	FailureFetch = "fetch-failure"
-)
 
 // MaxLinkedDocuments bounds how many per-currency TOML links Assay follows for
 // a single issuer stellar.toml. SEP-0001 allows a CURRENCIES entry to carry
@@ -265,6 +245,19 @@ type Doc struct {
 	// like every other issuer-controlled string, and never interpreted by
 	// Assay; each is empty when the document does not declare it.
 	Documentation Documentation `toml:"DOCUMENTATION"`
+	// NetworkPassphrase is the network the document declares itself published
+	// for (NETWORK_PASSPHRASE), read verbatim. SEP-0001 lists it as a
+	// recommended root key: a document is written for exactly one network, and
+	// the passphrase is how it says which.
+	//
+	// It is parsed so the domain check can contradict it when it disagrees with
+	// the network the scan actually read from — a pubnet asset whose toml
+	// declares the testnet passphrase is a misconfiguration or an
+	// impersonation attempt, and either is worth surfacing (#370). Empty when
+	// the document does not declare the key, and an absence is never a
+	// mismatch: the field is optional, so silence claims nothing. Nothing
+	// interprets the value beyond that comparison.
+	NetworkPassphrase string `toml:"NETWORK_PASSPHRASE"`
 	// URL is the location the document was actually fetched from, after
 	// redirects. It can differ from the requested URL.
 	URL string `toml:"-"`
