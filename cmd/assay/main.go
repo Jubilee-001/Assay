@@ -236,7 +236,7 @@ func runScan(args []string, d commandDeps) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	report, err := d.scan(ctx, asset, assetLists())
+	report, err := scanFn(ctx, asset)
 	if err != nil {
 		return err
 	}
@@ -305,7 +305,9 @@ func wireTransport(s *scan.Scanner, rt http.RoundTripper) {
 // scanner configured to consult them.
 func scanFuncFor(lists []string, d commandDeps) func(context.Context, mechanics.Asset) (*mechanics.Report, error) {
 	if len(lists) == 0 {
-		return d.scan
+		return func(ctx context.Context, asset mechanics.Asset) (*mechanics.Report, error) {
+			return d.scan(ctx, asset, lists)
+		}
 	}
 	return newScanner(lists).Scan
 }
@@ -394,10 +396,37 @@ func runAttestation(args []string, d commandDeps) error {
 		return fmt.Errorf("attestation: %w", err)
 	}
 
+	scanFn := scanFuncFor(assetLists(), d)
+	finish := func() {}
+	recordingDir := ""
+	if *bundleOut != "" {
+		recordingDir, err = os.MkdirTemp("", "assay-bundle-*")
+		if err != nil {
+			return fmt.Errorf("create bundle recording directory: %w", err)
+		}
+		defer func() {
+			if err := os.RemoveAll(recordingDir); err != nil {
+				_, _ = fmt.Fprintln(d.stderr, "assay: bundle recording directory not removed:", err)
+			}
+		}()
+		scanFn, finish, err = scanFuncForRecording(assetLists(), d, recordingDir, "")
+		if err != nil {
+			return err
+		}
+	}
+	finished := false
+	finishRecording := func() {
+		if !finished {
+			finish()
+			finished = true
+		}
+	}
+	defer finishRecording()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	report, err := d.scan(ctx, asset, assetLists())
+	report, err := scanFn(ctx, asset)
 	if err != nil {
 		return err
 	}
@@ -413,7 +442,7 @@ func runAttestation(args []string, d commandDeps) error {
 		// Close the recording before packaging: the manifest and bodies are
 		// written by Close, and a bundle built from a still-open recorder would
 		// be missing every response.
-		finish()
+		finishRecording()
 		if err := bundle.Write(*bundleOut, report, params, recordingDir); err != nil {
 			return fmt.Errorf("write verification bundle %s: %w", *bundleOut, err)
 		}
@@ -576,7 +605,6 @@ func runServe(args []string, log *slog.Logger) error {
 		return fmt.Errorf("serve: %w", err)
 	}
 
-	srv := api.NewServer(log)
 	// The server is where a list configuration matters most: every scan it
 	// serves consults the same configured lists, attributed the same way, and
 	// records them in the observation history like any other evidence.

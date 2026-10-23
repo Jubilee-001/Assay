@@ -37,6 +37,14 @@ const version = "v0.1.0"
 // asked for more than this, rather than assuming it.
 const MaxBody = 1 << 20 // 1 MiB
 
+const (
+	FailureConnectionRefused = "connection-refused"
+	FailureDNS               = "dns-failure"
+	FailureTimeout           = "timeout"
+	FailureHostRefused       = "host-refused"
+	FailureFetch             = "fetch-failure"
+)
+
 // MaxRedirects bounds how many redirects a stellar.toml fetch may follow.
 const MaxRedirects = 5
 

@@ -29,24 +29,6 @@ import (
 // at 6s each sum to 30s, matching the outer context budget in main.go and api.go.
 const DefaultFetchTimeout = 6 * time.Second
 
-// Options configures source caches and per-fetch timeouts for a Scanner.
-type Options struct {
-	ReputationDirectoryTTL time.Duration
-	ReputationBlocklistTTL time.Duration
-	FetchTimeout           time.Duration
-	NoReputationCache      bool
-}
-
-// DefaultOptions returns the production source-cache and timeout policy.
-func DefaultOptions() Options {
-	cacheOptions := stellarexpert.DefaultOptions()
-	return Options{
-		ReputationDirectoryTTL: cacheOptions.DirectoryTTL,
-		ReputationBlocklistTTL: cacheOptions.BlocklistTTL,
-		FetchTimeout:           DefaultFetchTimeout,
-	}
-}
-
 // issuerRE matches a Stellar ed25519 public key.
 var issuerRE = regexp.MustCompile(`^G[A-Z2-7]{55}$`)
 
@@ -206,12 +188,10 @@ func assetFromExplorerURL(u string) string {
 
 // Scanner fetches subject state and classifies it.
 type Scanner struct {
-	Horizon      *horizon.Client
-	Toml         *sep1.Fetcher
-	Expert       *stellarexpert.Client
-	Engine       *mechanics.Engine
-	FetchTimeout time.Duration
-	Network      horizon.Network
+	Horizon *horizon.Client
+	Toml    *sep1.Fetcher
+	Expert  *stellarexpert.Client
+	Engine  *mechanics.Engine
 	// Lists fetches the configured SEP-0042 Stellar Asset Lists.
 	Lists *assetlist.Client
 
@@ -275,6 +255,9 @@ type Options struct {
 	// re-fetches both curated sources. Use it when a stale answer would be
 	// unacceptable and the extra requests are affordable.
 	NoReputationCache bool
+
+	// FetchTimeout bounds any single source fetch. Zero uses the default.
+	FetchTimeout time.Duration
 }
 
 // DefaultOptions returns the production cache policy.
@@ -282,6 +265,7 @@ func DefaultOptions() Options {
 	return Options{
 		ReputationDirectoryTTL: stellarexpert.DefaultDirectoryTTL,
 		ReputationBlocklistTTL: stellarexpert.DefaultBlocklistTTL,
+		FetchTimeout:           DefaultFetchTimeout,
 	}
 }
 
@@ -369,18 +353,11 @@ func (s *Scanner) fetchTimeout() time.Duration {
 	return DefaultFetchTimeout
 }
 
-func (s *Scanner) resolveNetwork() (horizon.Network, error) {
-	detected, err := horizon.NetworkFor(s.Horizon.BaseURL)
-	if s.Network != "" {
-		if err == nil && detected != s.Network {
-			return "", fmt.Errorf("scan: declared network %q but Horizon serves %q", s.Network, detected)
-		}
-		return s.Network, nil
+func (s *Scanner) now() time.Time {
+	if s.Now != nil {
+		return s.Now().UTC()
 	}
-	if err != nil {
-		return "", err
-	}
-	return detected, nil
+	return time.Now().UTC()
 }
 
 // Subject fetches everything the checks need for one asset.
@@ -396,7 +373,7 @@ func (s *Scanner) Subject(ctx context.Context, a mechanics.Asset) (*mechanics.Su
 		return nil, err
 	}
 	timeout := s.fetchTimeout()
-	sub := &mechanics.Subject{Asset: a, ScannedAt: time.Now().UTC(), Network: network}
+	sub := &mechanics.Subject{Asset: a, ScannedAt: s.now(), Network: network}
 
 	statCtx, cancelStat := context.WithTimeout(ctx, timeout)
 	stat, err := s.Horizon.Asset(statCtx, a.Code, a.Issuer)
@@ -429,13 +406,13 @@ func (s *Scanner) Subject(ctx context.Context, a mechanics.Asset) (*mechanics.Su
 		tomlAttemptedAt time.Time
 		tomlURL         string
 
-		blockedVal       stellarexpert.Answer[stellarexpert.BlockedDomain]
+		blockedVal       *stellarexpert.BlockedDomain
 		blockedErr       string
 		blockedFetchedAt time.Time
 		blockedAttAt     time.Time
 		blockedURL       string
 
-		dirVal       stellarexpert.Answer[stellarexpert.DirectoryEntry]
+		dirVal       *stellarexpert.DirectoryEntry
 		dirErr       string
 		dirFetchedAt time.Time
 		dirAttAt     time.Time
@@ -461,7 +438,7 @@ func (s *Scanner) Subject(ctx context.Context, a mechanics.Asset) (*mechanics.Su
 			tomlAttemptedAt = attempted
 			doc, err := s.Toml.Fetch(tomlCtx, domain)
 			if err != nil {
-				tomlErr = err.Error()
+				tomlErr = sep1.CanonicalFailure(err)
 				tomlRefused = errors.Is(err, sep1.ErrNonPublicHost)
 			} else {
 				tomlDoc = doc
@@ -498,7 +475,7 @@ func (s *Scanner) Subject(ctx context.Context, a mechanics.Asset) (*mechanics.Su
 		entry, err := s.Expert.Directory(dirCtx, a.Issuer)
 		dirAttAt = attempted
 		if err != nil {
-			dirErr = err.Error()
+			dirErr = sep1.CanonicalFailure(err)
 		} else {
 			dirVal = entry.Value
 			dirFetchedAt = entry.FetchedAt

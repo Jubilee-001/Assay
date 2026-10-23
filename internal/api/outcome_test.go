@@ -12,6 +12,7 @@ import (
 
 	"github.com/use-assay/assay/internal/api"
 	"github.com/use-assay/assay/internal/scan"
+	"github.com/use-assay/assay/internal/stellarexpert"
 )
 
 // A valid mainnet asset: USDC. Its issuer has no home_domain dependency in

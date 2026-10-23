@@ -318,7 +318,7 @@ The open questions for Scheme C are resolved as follows:
 - **Deprecation schedule:** Single-attestor admin writes are slated for deprecation once independent scanner operators are online; read functions will remain available for at least two interface versions.
 
 ### 3. Recommended default attestor set
-- Assay publishes a recommended default set of independent attestors in [deployment.md](deployment.md#recommended-attestor-sets).
+- Assay publishes a recommended default set of independent attestors in this section.
 - Operators must run on separate cloud/hardware infrastructure with different signing keys.
 - Integrators are explicitly informed in documentation that consumer-chosen quorum requires choosing independent operators; naming multiple endpoints operated by the same party collapses trust back to Scheme A.
 
@@ -327,4 +327,3 @@ The open questions for Scheme C are resolved as follows:
 - **Contested visibility:**
   - `quorum()` returns `Quorum::Contested(count)` (where `count >= threshold`) when responding attestors disagree on severity or flags. Observers and the scanner pipeline can monitor quorum evaluation or poll `get_attestation` for active assets to alert when an attestor disagrees with consensus.
   - Conservative aggregation ensures that during a `Contested` condition, safety is preserved because danger is never lowered.
-

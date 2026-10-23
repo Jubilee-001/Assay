@@ -136,7 +136,8 @@ func TestGoldenFilesHaveCanonicalLineEndings(t *testing.T) {
 		}
 		version := strings.SplitN(string(raw), "\n", 2)[0]
 		switch version {
-		case attest.PreimageVersion, attest.PreimageVersionCheckSet, attest.PreimageVersionNetwork:
+		case attest.PreimageVersion, attest.PreimageVersionCheckSet, attest.PreimageVersionNetwork,
+			attest.PreimageVersionScanner:
 		default:
 			t.Errorf("%s starts with unsupported version line %q", e, version)
 		}

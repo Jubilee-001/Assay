@@ -13,6 +13,11 @@ import (
 	"github.com/use-assay/assay/internal/mechanics"
 )
 
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
+}
+
 // The layout each tag names, as documented in docs/contract-interface.md:
 // the keys of the lines between the version line and the evidence lines.
 var documentedLayouts = map[string][]string{
