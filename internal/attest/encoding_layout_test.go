@@ -13,6 +13,12 @@ import (
 	"github.com/use-assay/assay/internal/mechanics"
 )
 
+// firstLine returns the first line of a string (up to the first newline).
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
+}
+
 // The layout each tag names, as documented in docs/contract-interface.md:
 // the keys of the lines between the version line and the evidence lines.
 var documentedLayouts = map[string][]string{
