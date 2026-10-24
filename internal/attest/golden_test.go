@@ -135,10 +135,7 @@ func TestGoldenFilesHaveCanonicalLineEndings(t *testing.T) {
 			t.Errorf("%s ends with a blank line: the canonical encoding terminates the last line exactly once", e)
 		}
 		version := strings.SplitN(string(raw), "\n", 2)[0]
-		switch version {
-		case attest.PreimageVersion, attest.PreimageVersionCheckSet, attest.PreimageVersionNetwork,
-			attest.PreimageVersionScanner:
-		default:
+		if !hasAnyPreimageVersion(string(raw)) {
 			t.Errorf("%s starts with unsupported version line %q", e, version)
 		}
 	}

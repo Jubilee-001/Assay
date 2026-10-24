@@ -37,6 +37,7 @@ const version = "v0.1.0"
 // asked for more than this, rather than assuming it.
 const MaxBody = 1 << 20 // 1 MiB
 
+// Failure labels are stable, host-independent categories for source errors.
 const (
 	FailureConnectionRefused = "connection-refused"
 	FailureDNS               = "dns-failure"

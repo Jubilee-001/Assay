@@ -97,7 +97,7 @@ func requireFlagsObject(b []byte) error {
 		Flags json.RawMessage `json:"flags"`
 	}
 	if err := json.Unmarshal(b, &probe); err != nil {
-		return err
+		return fmt.Errorf("horizon: inspect record flags: %w", err)
 	}
 	if probe.Flags == nil {
 		return errors.New("horizon: record carries no flags object")
@@ -130,7 +130,7 @@ func (s *AssetStat) UnmarshalJSON(b []byte) error {
 	type wire AssetStat
 	var w wire
 	if err := json.Unmarshal(b, &w); err != nil {
-		return err
+		return fmt.Errorf("horizon: decode asset record: %w", err)
 	}
 	if err := requireFlagsObject(b); err != nil {
 		return err
@@ -153,7 +153,7 @@ func (a *Account) UnmarshalJSON(b []byte) error {
 	type wire Account
 	var w wire
 	if err := json.Unmarshal(b, &w); err != nil {
-		return err
+		return fmt.Errorf("horizon: decode account record: %w", err)
 	}
 	if err := requireFlagsObject(b); err != nil {
 		return err
