@@ -2,6 +2,7 @@ package sep1_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -49,10 +50,13 @@ func (t redirectTestTransport) RoundTrip(req *http.Request) (*http.Response, err
 	rewritten.URL.Host = t.target.Host
 	rewritten.Host = t.target.Host
 	resp, err := t.base.RoundTrip(rewritten)
+	if err != nil {
+		return resp, fmt.Errorf("redirect test transport: %w", err)
+	}
 	if resp != nil {
 		resp.Request = req
 	}
-	return resp, err
+	return resp, nil
 }
 
 // TestRedirectWithinBound follows two same-site hops and expects the document

@@ -11,10 +11,14 @@ import (
 type Network string
 
 const (
+	// PublicNet is the SDF pubnet network passphrase.
 	PublicNet Network = "Public Global Stellar Network ; September 2015"
-	TestNet   Network = "Test SDF Network ; September 2015"
+	// TestNet is the SDF testnet network passphrase.
+	TestNet Network = "Test SDF Network ; September 2015"
 )
 
+// ErrUnknownNetwork reports that the Horizon URL does not identify a known
+// Stellar network.
 var ErrUnknownNetwork = errors.New("horizon: unknown network")
 
 // NetworkFor identifies the network only for the canonical Horizon hosts.

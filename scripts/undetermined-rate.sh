@@ -49,8 +49,14 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
+if [ -z "$DELAY" ]; then
+    INTERVAL=21600
+else
+    INTERVAL=$DELAY
+fi
+
 ASSET_COUNT="$(wc -l < "$ASSETS_FILE" | tr -d ' ')"
-echo "scanning $ASSET_COUNT assets over $RUNS runs (6h intervals)" >&2
+echo "scanning $ASSET_COUNT assets over $RUNS runs (${INTERVAL}s intervals)" >&2
 echo "output directory: $OUTPUT_DIR" >&2
 
 # Create assets list for the loop
@@ -58,17 +64,10 @@ ASSETS_LIST="$(cat "$ASSETS_FILE")"
 
 # Track source counts using a simple approach: accumulate raw JSON
 SOURCE_TRACKING="$OUTPUT_DIR/.source-tracking.jsonl"
-> "$SOURCE_TRACKING"
+: > "$SOURCE_TRACKING"
 
 run_num=1
 start_time="$(date -u +%s)"
-
-# If --delay not set, default to 6h = 21600s
-if [ -z "$DELAY" ]; then
-    INTERVAL=21600
-else
-    INTERVAL=$DELAY
-fi
 
 while [ "$run_num" -le "$RUNS" ]; do
     run_start="$(date -u +%s)"
@@ -124,7 +123,7 @@ print(json.dumps({
 
     # Calculate when the next run should start (6h after this one started)
     if [ "$run_num" -lt "$RUNS" ]; then
-        desired_next="$((run_start + 21600))"
+        desired_next="$((run_start + INTERVAL))"
         now="$(date -u +%s)"
         sleep_time=$((desired_next - now))
         if [ "$sleep_time" -gt 0 ]; then
