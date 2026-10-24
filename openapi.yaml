@@ -258,7 +258,7 @@ components:
           type: boolean
           description: >-
             True when this check could not reach a conclusion because a source
-            it depends on was unreachable ΓÇö not the same as finding nothing.
+it depends on was unreachable — not the same as finding nothing.
         undetermined_by_source:
           type: object
           additionalProperties:
@@ -553,7 +553,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/UpstreamStatus'
-        registry_staleness:
+registry_staleness:
           type: object
           description: Informational registry freshness; does not affect readiness status.
           required: [status, checked_at, window_secs, asset_count, attested_count, unattested_count, stale_count]

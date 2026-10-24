@@ -361,7 +361,7 @@ func (s *Scanner) fetchTimeout() time.Duration {
 // client stamps on its own answers, which the golden test pins on the client.
 func (s *Scanner) now() time.Time {
 	if s.Now != nil {
-		return s.Now().UTC()
+		return s.Now()
 	}
 	return time.Now().UTC()
 }
@@ -457,7 +457,7 @@ func (s *Scanner) Subject(ctx context.Context, a mechanics.Asset) (*mechanics.Su
 			doc, err := s.Toml.Fetch(tomlCtx, domain)
 			if err != nil {
 				tomlErr = sep1.CanonicalFailure(err)
-// A host-policy refusal is a decision, not an outage. It is
+				// A host-policy refusal is a decision, not an outage. It is
 				// recorded as such so the domain check can report a refusal
 				// rather than a source that failed to answer.
 				tomlRefused = errors.Is(err, sep1.ErrNonPublicHost)

@@ -5,6 +5,10 @@ PKG := ./...
 # description that `make help` reads.
 .DEFAULT_GOAL := help
 
+# How long each target fuzzes under `make fuzz`. `make test` already exercises
+# the committed seed corpus; this default is for manual exploration.
+FUZZTIME ?= 5m
+
 CONTRACTS := assay-contracts
 WASM := $(CONTRACTS)/out/assay_safety_registry.wasm
 
@@ -15,11 +19,15 @@ SOURCE ?= assay-attester
 CONTRACT_ID ?= CBK4FBIHMDTXCUPE4E3ZDVSFJSCY5FJETTKNIQPN4LFJIKKIBLKIXQ73
 STELLAR_CLI_VERSION := 27.1.0
 
-.PHONY: all build build-release test test-notify test-preimage test-reproducibility test-stellar-cli-version cover lint fmt vet run clean \
+.PHONY: help doctor all build build-release test test-notify test-preimage test-reproducibility test-stellar-cli-version cover lint fmt vet run clean \
 	offline-test e2e-standalone \
-	contract-test contract-lint contract-build \
-	build-contract deploy-testnet attest read check-stellar-cli-version verify-gate verify-wasm \
-	eval-record eval-compare
+	contract-test contract-lint contract-build wasm-size \n	build-contract deploy-testnet attest read check-stellar-cli-version verify-gate verify-wasm \n	eval-record eval-compare
+
+help: ## List every target with a one-line description
+	@awk 'BEGIN {FS = ":.*## "; print "Usage: make <target>\n\nTargets:"} /^[a-zA-Z0-9_.-]+:.*## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+doctor: ## Check the local toolchain against the versions this repo pins
+	./scripts/doctor.sh
 
 all: build ## Build the scanner (same as build)
 
@@ -98,6 +106,12 @@ cover: ## Print the per-package coverage table, lowest first
 	./scripts/coverage-report.sh coverage.log coverage.out; \
 	exit $$rc
 
+# Runs each fuzz target for FUZZTIME. CI runs a short 30s per target; this
+# target is for longer manual passes: make fuzz FUZZTIME=10m
+fuzz: ## Fuzz ParseAsset and the stellar.toml parser for FUZZTIME each (default 5m)
+	go test ./internal/scan/ -run Fuzz -fuzz FuzzParseAsset -fuzztime $(FUZZTIME)
+	go test ./internal/sep1/ -run Fuzz -fuzz FuzzParseToml -fuzztime $(FUZZTIME)
+
 fmt: ## Format the Go source with gofmt
 	gofmt -w .
 
@@ -119,6 +133,9 @@ contract-lint: ## Check contract formatting and run clippy with warnings denied
 
 contract-build: ## Compile the contracts to wasm without the stellar optimizer
 	cd $(CONTRACTS) && cargo build --release --target wasm32v1-none
+
+wasm-size: ## Check the contract wasm sizes against assay-contracts/wasm-size-baseline.json
+	./scripts/check-wasm-size.sh
 
 # Fail before invoking a CLI version that may produce incompatible output or wasm.
 check-stellar-cli-version:
