@@ -45,11 +45,13 @@ Every Go package, its responsibility, and the boundary it must respect.
 | `cmd/attestfixture` | Derives `attest()` arguments from one labelled fixture for the local-network end-to-end test. | Offline test helper; reads fixtures through `internal/eval` and never fetches a source. |
 | `cmd/eval` | Records and diffs the labelled eval baseline. | Offline; reads fixtures through `internal/eval`. |
 | `cmd/refreshfixture` | Re-captures corpus fixtures from recorded live source URLs to detect upstream drift. | Offline maintenance only; never run in CI or live scan. |
+| `scripts/secretscan` | Scans diffs for Stellar secret seeds and validates the strkey checksum. | CI helper only; reads text and performs no I/O beyond stdin or named files. |
 | `internal/api` | HTTP API (`/api/v1/scan`, `/api/v1/history`, `/healthz`) and the embedded single-file UI. | Serves inbound HTTP and reports registry freshness through `internal/registry`; scan sources remain delegated to the scanner. |
 | `internal/attester` | Attested-set config, the dry-run pass and its exit codes, the dry-run diff, and the issuer watcher. | Calls the scanner (or replays fixtures through `internal/eval`) and reads Horizon operations through `internal/horizon`. No key material and no transaction submission. |
 | `internal/assetlist` | Fetches and parses SEP-0042 Stellar Asset Lists to provide curated asset metadata and claims. | Outbound HTTP. Leaf package; called by `internal/scan`. |
 | `internal/cache` | Thread-safe in-memory TTL cache for HTTP responses and reputation queries. | No I/O. In-memory storage only; leaf package used by `internal/stellarexpert`. |
 | `internal/differential` | Compares Assay scanner reports against stellar-core XDR ledger state. | Test and verification utility; reads XDR and ledger state, no production dependencies. |
+| `internal/docindex` | Test-only check that the README docs tables stay in sync with `docs/`: every document is linked from the README, and every README link into `docs/` resolves. | Test-only; no production code, no I/O beyond reading the repository's own markdown. |
 | `internal/fixtures` | Utilities to read, diff, refresh, and validate test fixture manifests and provenance. | Filesystem I/O for fixtures; outbound HTTP when re-capturing. Offline and test only. |
 | `internal/sac` | Derives a classic asset's Stellar Asset Contract address for a network, exactly as `stellar contract id asset` does. | **No I/O.** A pure function of asset and network passphrase. |
 | `internal/scan` | The network edge for a scan: fetches every source once, assembles `mechanics.Subject` (and an optional holder trustline), then runs the engine. | **The only package that performs network I/O for a scan.** |

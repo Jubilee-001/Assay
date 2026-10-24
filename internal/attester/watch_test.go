@@ -89,6 +89,8 @@ func newFixtureHorizon(t *testing.T) (*httptest.Server, *fakeHorizon) {
 		case r.URL.Path == "/accounts/"+watchedIssuer:
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"account_id": watchedIssuer,
+				// Horizon always publishes all four flags, and the decoder
+				// refuses a partial set (#530), so the fixture does too.
 				"flags": map[string]bool{
 					"auth_required":         true,
 					"auth_revocable":        false,

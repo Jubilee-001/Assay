@@ -43,10 +43,9 @@ import (
 // because the attestations it describes were hashed without one (#269).
 const PreimageVersion = "assay-evidence-v1"
 
-// PreimageVersionCheckSet is the encoding used once a report binds its check
-// set. It adds a `checks` line naming the checks the engine actually ran, so a
-// report produced by an engine with a check removed cannot hash the same as one
-// produced by the full engine.
+// PreimageVersionCheckSet adds a `checks` line naming the checks the engine
+// actually ran, so a report produced by an engine with a check removed cannot
+// hash the same as one produced by the full engine.
 //
 // It is a v2 rather than an edit to v1 for the same reason the version line
 // exists: every attestation already on-chain was hashed under v1, and must
@@ -182,9 +181,12 @@ type ProvenanceStatus string
 // outcomes of evaluating a report's bound scanner version against the caller's
 // minimum.
 const (
-	ProvenanceValid   ProvenanceStatus = "valid"   // ProvenanceValid means the scanner version meets the caller's minimum.
-	ProvenanceInvalid ProvenanceStatus = "invalid" // Version below caller's minimum
-	ProvenanceUnknown ProvenanceStatus = "unknown" // No version recorded (pre-v2 attestation)
+	// ProvenanceValid means the scanner version meets the caller's minimum.
+	ProvenanceValid ProvenanceStatus = "valid"
+	// ProvenanceInvalid means the recorded version is below the caller's minimum.
+	ProvenanceInvalid ProvenanceStatus = "invalid"
+	// ProvenanceUnknown means no scanner version was recorded.
+	ProvenanceUnknown ProvenanceStatus = "unknown"
 )
 
 // ErrUnknownProvenance reports an attestation produced without version binding (pre-v2).
@@ -454,6 +456,7 @@ func renderPreimage(rep *mechanics.Report, version string) string {
 	line(&b, "escalated", strconv.FormatBool(rep.Escalated))
 	line(&b, "mechanics", strconv.FormatUint(uint64(rep.Mechanics), 10))
 	line(&b, "accountability", string(rep.Accountability))
+
 	if rank >= 2 {
 		checks := append([]string(nil), rep.CheckSet...)
 		sort.Strings(checks)

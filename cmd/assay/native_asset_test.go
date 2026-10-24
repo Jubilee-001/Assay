@@ -26,7 +26,7 @@ func TestNativeAssetIsRefusedBeforeAnyScan(t *testing.T) {
 				d := commandDeps{
 					stdout: out,
 					stderr: &bytes.Buffer{},
-					scan: func(context.Context, mechanics.Asset, []string) (*mechanics.Report, error) {
+					scan: func(context.Context, mechanics.Asset) (*mechanics.Report, error) {
 						called = true
 						return testReport(), nil
 					},

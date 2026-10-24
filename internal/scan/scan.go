@@ -25,8 +25,10 @@ import (
 )
 
 // DefaultFetchTimeout is the maximum duration allocated to any single source fetch.
-// Five total fetches (two sequential ledger fetches and three concurrent post-account fetches)
-// at 6s each sum to 30s, matching the outer context budget in main.go and api.go.
+// Six fetches run in total: two sequential ledger fetches, then four concurrent
+// post-account fetches. At 6s each the worst case is two sequential windows
+// plus one concurrent window, staying inside the outer 30-second context budget
+// in main.go and api.go.
 const DefaultFetchTimeout = 6 * time.Second
 
 // issuerRE matches a Stellar ed25519 public key.
@@ -301,13 +303,12 @@ func New() *Scanner {
 // docs/caching.md.
 func NewWithOptions(opts Options) *Scanner {
 	return &Scanner{
-		Horizon:      horizon.New(os.Getenv("ASSAY_HORIZON_URL")),
-		Toml:         sep1.NewFetcher(),
-		Expert:       stellarexpert.NewWithOptions(os.Getenv("ASSAY_STELLAREXPERT_URL"), expertOptions(opts)),
-		Engine:       mechanics.NewEngine(),
-		Lists:        assetlist.New(),
-		FetchTimeout: opts.FetchTimeout,
-		Network:      horizon.PublicNet,
+		Horizon: horizon.New(os.Getenv("ASSAY_HORIZON_URL")),
+		Toml:    sep1.NewFetcher(),
+		Expert:  stellarexpert.NewWithOptions(os.Getenv("ASSAY_STELLAREXPERT_URL"), expertOptions(opts)),
+		Engine:  mechanics.NewEngine(),
+		Lists:   assetlist.New(),
+		Network: horizon.PublicNet,
 	}
 }
 
@@ -353,6 +354,11 @@ func (s *Scanner) fetchTimeout() time.Duration {
 	return DefaultFetchTimeout
 }
 
+// now is the scanner's clock: the pinned one when a test installs Scanner.Now,
+// the host wall clock otherwise. Every timestamp the scanner itself records
+// during subject assembly goes through it, so one override fixes the whole
+// set — the only other time sources a golden render sees are the ones a source
+// client stamps on its own answers, which the golden test pins on the client.
 func (s *Scanner) now() time.Time {
 	if s.Now != nil {
 		return s.Now().UTC()
@@ -372,8 +378,8 @@ func (s *Scanner) Subject(ctx context.Context, a mechanics.Asset) (*mechanics.Su
 	if err != nil {
 		return nil, err
 	}
-	timeout := s.fetchTimeout()
 	sub := &mechanics.Subject{Asset: a, ScannedAt: s.now(), Network: network}
+	timeout := s.fetchTimeout()
 
 	statCtx, cancelStat := context.WithTimeout(ctx, timeout)
 	stat, err := s.Horizon.Asset(statCtx, a.Code, a.Issuer)
@@ -400,19 +406,32 @@ func (s *Scanner) Subject(ctx context.Context, a mechanics.Asset) (*mechanics.Su
 	var (
 		wg sync.WaitGroup
 
+		// StellarExpert's asset metadata is fetched best-effort alongside the
+		// other post-account lookups. A network drop is recorded on the subject
+		// as an undetermined fetch — the scan itself never fails, and the
+		// reputation check reports the gap as undetermined rather than as a
+		// clean source. The rating is attributed evidence only: it can add a
+		// statement to the report but is never consulted by the upward-only
+		// severity rules.
+		expertAssetURL         string
+		expertAssetVal         *stellarexpert.Asset
+		expertAssetErr         string
+		expertAssetAttemptedAt time.Time
+		expertAssetFetchedAt   time.Time
+
 		tomlDoc         *sep1.Doc
 		tomlErr         string
 		tomlRefused     bool
 		tomlAttemptedAt time.Time
 		tomlURL         string
 
-		blockedVal       *stellarexpert.BlockedDomain
+		blockedVal       stellarexpert.Answer[stellarexpert.BlockedDomain]
 		blockedErr       string
 		blockedFetchedAt time.Time
 		blockedAttAt     time.Time
 		blockedURL       string
 
-		dirVal       *stellarexpert.DirectoryEntry
+		dirVal       stellarexpert.Answer[stellarexpert.DirectoryEntry]
 		dirErr       string
 		dirFetchedAt time.Time
 		dirAttAt     time.Time
@@ -434,12 +453,18 @@ func (s *Scanner) Subject(ctx context.Context, a mechanics.Asset) (*mechanics.Su
 			defer wg.Done()
 			tomlCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
-			attempted := time.Now().UTC()
-			tomlAttemptedAt = attempted
+			attempted := s.now()
 			doc, err := s.Toml.Fetch(tomlCtx, domain)
 			if err != nil {
 				tomlErr = sep1.CanonicalFailure(err)
+// A host-policy refusal is a decision, not an outage. It is
+				// recorded as such so the domain check can report a refusal
+				// rather than a source that failed to answer.
 				tomlRefused = errors.Is(err, sep1.ErrNonPublicHost)
+				// A failed fetch has no completion time, so the attempt time is
+				// what failure evidence carries — explicitly labelled as an attempt
+				// by Evidence.Attempted.
+				tomlAttemptedAt = attempted
 			} else {
 				tomlDoc = doc
 			}
@@ -457,12 +482,16 @@ func (s *Scanner) Subject(ctx context.Context, a mechanics.Asset) (*mechanics.Su
 			if err != nil {
 				blockedErr = sep1.CanonicalFailure(err)
 			} else {
-				blockedVal = blocked.Value
+				blockedVal = blocked
+				// The source's OWN completion time, which on a cache hit is
+				// the instant the answer was originally fetched. Stamping the
+				// lookup time here instead is the one thing the cache must
+				// never cause: Evidence.RetrievedAt would then claim a
+				// freshness the data does not have, in the report and in the
+				// preimage a verifier re-derives.
 				blockedFetchedAt = blocked.FetchedAt
 			}
 		}()
-	} else {
-		sub.BlockedSkipped = "the issuer advertises no home_domain to key the lookup on"
 	}
 
 	dirURL = s.Expert.DirectoryURL(a.Issuer)
@@ -477,34 +506,78 @@ func (s *Scanner) Subject(ctx context.Context, a mechanics.Asset) (*mechanics.Su
 		if err != nil {
 			dirErr = sep1.CanonicalFailure(err)
 		} else {
-			dirVal = entry.Value
+			dirVal = entry
+			// As above: the directory answer's own fetch time, not this scan's.
 			dirFetchedAt = entry.FetchedAt
 		}
 	}()
 
+	// The asset endpoint is keyed on the asset itself, so it is always asked —
+	// unlike the domain-keyed lookups above, which need a home_domain. It runs
+	// with the rest of the concurrent group so that a slow or dead
+	// StellarExpert cannot serialise another fetch's timeout onto the scan.
+	expertAssetURL = s.Expert.AssetURL(a.Code, a.Issuer)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		expertAssetAttemptedAt = time.Now().UTC()
+		expertCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		expertAsset, err := s.Expert.Asset(expertCtx, a.Code, a.Issuer)
+		if err != nil {
+			// The drop is recorded and the scan moves on: this source is
+			// best-effort evidence, never a reason to fail a scan.
+			expertAssetErr = err.Error()
+			return
+		}
+		expertAssetVal = expertAsset
+		expertAssetFetchedAt = time.Now().UTC()
+	}()
+
 	wg.Wait()
+
+	sub.ExpertAssetURL = expertAssetURL
+	sub.ExpertAsset = expertAssetVal
+	sub.ExpertAssetErr = expertAssetErr
+	sub.ExpertAssetAttemptedAt = expertAssetAttemptedAt
+	sub.ExpertAssetFetchedAt = expertAssetFetchedAt
+
 	sub.TomlURL = tomlURL
+	sub.Toml = tomlDoc
 	sub.TomlErr = tomlErr
 	sub.TomlRefused = tomlRefused
 	sub.TomlAttemptedAt = tomlAttemptedAt
-	sub.Toml = tomlDoc
+	// SEP-0001 lets a currency entry delegate to a separate per-currency
+	// document. Follow those links — one hop, bounded by
+	// sep1.MaxLinkedDocuments and subject to the same host policy — but
+	// only when the asset was not already claimed inline, which keeps the
+	// common case at one fetch, and only once the fetch it depends on has
+	// returned.
 	if tomlDoc != nil && tomlDoc.LinkedCurrencies(a.Code, a.Issuer) > 0 && !tomlDoc.Claims(a.Code, a.Issuer) {
 		sub.TomlLinked = s.Toml.ResolveLinked(ctx, tomlDoc, a.Code, a.Issuer)
 	}
-	sub.BlockedURL = blockedURL
-	sub.BlockedErr = blockedErr
-	sub.BlockedAttemptedAt = blockedAttAt
-	sub.Blocked = blockedVal
-	sub.BlockedFetchedAt = blockedFetchedAt
-	sub.DirectoryURL = dirURL
-	sub.DirectoryErr = dirErr
-	sub.DirectoryAttemptedAt = dirAttAt
-	sub.Directory = dirVal
-	sub.DirectoryFetchedAt = dirFetchedAt
 
-	if s.Toml == nil && sub.TomlAttemptedAt.IsZero() {
-		sub.TomlAttemptedAt = time.Now().UTC()
+	if domain != "" {
+		sub.BlockedURL = blockedURL
+		sub.Blocked = blockedVal.Value
+		sub.BlockedErr = blockedErr
+		sub.BlockedFetchedAt = blockedFetchedAt
+		sub.BlockedAttemptedAt = blockedAttAt
+	} else {
+		// The blocklist is keyed on a domain, and there is none: the question
+		// cannot be put at all. Record that explicitly rather than leaving the
+		// fields empty, because an empty Blocked with no error reads downstream
+		// as "the lookup ran and found no entry" — and a blocklist hit
+		// escalates severity, so that silently-dropped lookup is a risk this
+		// report would understate.
+		sub.BlockedSkipped = "the issuer advertises no home_domain to key the lookup on"
 	}
+
+	sub.DirectoryURL = dirURL
+	sub.Directory = dirVal.Value
+	sub.DirectoryErr = dirErr
+	sub.DirectoryFetchedAt = dirFetchedAt
+	sub.DirectoryAttemptedAt = dirAttAt
 
 	// SEP-0042 asset lists, one signal each, in configuration order. Each is
 	// best-effort for the same reason every other consumed signal is: a list

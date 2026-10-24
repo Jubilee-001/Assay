@@ -9,6 +9,7 @@
 //
 //	GET /explorer/directory/{address}                 -> curated address entry
 //	GET /explorer/directory/blocked-domains/{domain}  -> {"domain":..,"blocked":bool}
+//	GET /explorer/public/asset/{CODE-ISSUER}          -> asset metadata and rating
 //
 // Answers from these endpoints are cached for a bounded time and returned with
 // the instant the source produced them, never the instant a cache served them.
@@ -54,26 +55,46 @@ const defaultUserAgent = "assay/" + version + " (+https://github.com/use-assay/A
 // can assert the bound rather than assume it.
 const MaxBody = 1 << 20 // 1 MiB
 
-// RetryOptions bounds attempts and spaces retries with backoff.
+// RetryOptions bounds exponential backoff with jitter for transient failures.
+// Retry-After takes precedence when the server advertises it.
 type RetryOptions struct {
-	Attempts int
-	Backoff  func(attempt int, retryAfter time.Duration) time.Duration
+	Attempts        int
+	InitialDelay    time.Duration
+	MaxDelay        time.Duration
+	MaxTotalLatency time.Duration
 }
 
-// DefaultRetryOptions returns the bounded retry policy used for transient
-// StellarExpert failures.
-func DefaultRetryOptions() RetryOptions {
-	return RetryOptions{
-		Attempts: 3,
-		Backoff: func(attempt int, retryAfter time.Duration) time.Duration {
-			backoff := time.Duration(float64(100*time.Millisecond) * math.Pow(2, float64(attempt)))
-			delay := backoff + time.Duration(rand.Float64()*float64(backoff))
-			if retryAfter > delay {
-				return retryAfter
-			}
-			return delay
-		},
+// DefaultRetryOptions caps total added latency at ~2s, well inside the
+// outer 30s scan budget, and honours the Retry-After we actually observed on
+// api.stellar.expert.
+func DefaultRetryOptions() *RetryOptions {
+	return &RetryOptions{
+		Attempts:        3,
+		InitialDelay:    250 * time.Millisecond,
+		MaxDelay:        500 * time.Millisecond,
+		MaxTotalLatency: 2 * time.Second,
 	}
+}
+
+// Backoff returns the next delay after an attempt failed, with full jitter:
+// a uniform draw in [0, min(MaxDelay, InitialDelay * 2^attempt)].
+func (o *RetryOptions) Backoff(attempt int, retryAfter time.Duration) time.Duration {
+	target := o.InitialDelay * time.Duration(math.Pow(2, float64(attempt)))
+	if target > o.MaxDelay {
+		target = o.MaxDelay
+	}
+	if retryAfter > 0 && retryAfter < target {
+		target = retryAfter
+	}
+	if target <= 0 {
+		target = o.InitialDelay
+	}
+	n := rand.Int63()
+	if n < 0 {
+		n = -n
+	}
+	target = time.Duration(n % int64(target))
+	return target
 }
 
 // AdvertisedMaxAge is the freshness budget StellarExpert publishes for the
@@ -216,6 +237,35 @@ type BlockedDomain struct {
 	Blocked bool   `json:"blocked"`
 }
 
+// Asset is the asset-level metadata published by StellarExpert. These values
+// are descriptive source data and are not an Assay score.
+type Asset struct {
+	Asset      string          `json:"asset"`
+	Code       string          `json:"code"`
+	Issuer     string          `json:"issuer"`
+	Supply     string          `json:"supply"`
+	Trustlines TrustlineCounts `json:"trustlines"`
+	Rating     AssetRating     `json:"rating"`
+}
+
+// TrustlineCounts are the counters returned by the public asset endpoint.
+type TrustlineCounts struct {
+	Total      int `json:"total"`
+	Authorized int `json:"authorized"`
+	Funded     int `json:"funded"`
+}
+
+// AssetRating is StellarExpert's component rating data.
+type AssetRating struct {
+	Age        int `json:"age"`
+	Activity   int `json:"activity"`
+	Trustlines int `json:"trustlines"`
+	Liquidity  int `json:"liquidity"`
+	Volume7d   int `json:"volume7d"`
+	Interop    int `json:"interop"`
+	Average    int `json:"average"`
+}
+
 // Client reads StellarExpert's curated data sets.
 type Client struct {
 	BaseURL   string
@@ -264,6 +314,11 @@ func (c *Client) DirectoryURL(address string) string {
 // BlockedDomainURL returns the public URL for a blocked-domain lookup.
 func (c *Client) BlockedDomainURL(domain string) string {
 	return c.BaseURL + "/explorer/directory/blocked-domains/" + url.PathEscape(domain)
+}
+
+// AssetURL returns the public URL for an asset metadata lookup.
+func (c *Client) AssetURL(code, issuer string) string {
+	return c.BaseURL + "/explorer/public/asset/" + url.PathEscape(code+"-"+issuer)
 }
 
 // Directory looks up an address in the curated directory.
@@ -321,7 +376,9 @@ func (c *Client) BlockedDomain(ctx context.Context, domain string, opts ...Looku
 			return Answer[BlockedDomain]{}, err
 		}
 		at := c.now()
-		if !found {
+		// A record with no domain names nothing on the blocklist: treat it as
+		// not blocked rather than reporting an empty entry as a listing.
+		if !found || b.Domain == "" {
 			return Answer[BlockedDomain]{FetchedAt: at}, nil
 		}
 		return Answer[BlockedDomain]{Value: &b, FetchedAt: at}, nil
@@ -359,6 +416,16 @@ func lookup[T stamped](c *cache.Cache[T], key string, opts []LookupOption, fetch
 	// serve it later. The cache no-ops when its TTL is non-positive.
 	c.Put(key, cache.Entry[T]{Value: val, FetchedAt: val.fetchedAt()})
 	return val, false, nil
+}
+
+// Asset looks up StellarExpert's asset-level metadata and rating.
+func (c *Client) Asset(ctx context.Context, code, issuer string) (*Asset, error) {
+	var a Asset
+	found, err := c.get(ctx, c.AssetURL(code, issuer), &a)
+	if err != nil || !found {
+		return nil, err
+	}
+	return &a, nil
 }
 
 // get returns found=false on 404 rather than an error, because "not listed" is

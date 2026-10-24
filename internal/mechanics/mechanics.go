@@ -47,7 +47,7 @@ func (c CanonicalTime) Time() time.Time { return time.Time(c) }
 // Equal reports whether c and t represent the same instant.
 func (c CanonicalTime) Equal(t time.Time) bool { return c.Time().Equal(t) }
 
-// Format returns the formatted representation of the underlying instant.
+// Format renders the underlying time with the requested layout.
 func (c CanonicalTime) Format(layout string) string { return c.Time().Format(layout) }
 
 // IsZero reports whether the instant is the zero time, mirroring
@@ -93,12 +93,27 @@ func (a Asset) String() string { return a.Code + "-" + a.Issuer }
 // outside claim by constructing an Evidence with its source and URL, there is
 // no code path that renders someone else's data as an Assay conclusion.
 type Evidence struct {
-	Source       string `json:"source"`
-	URL          string `json:"url"`
+	Source string `json:"source"`
+	// URL is the location the claim is attributed to. It keeps its original
+	// per-path meaning so that no attestation already on chain moves: on a
+	// successful fetch it is the FINAL location, after redirects; on a failed
+	// fetch it is the REQUESTED location, because no final document existed.
+	// RequestedURL carries the other half.
+	URL string `json:"url"`
+	// RequestedURL is the SEP-1 well-known location derived from home_domain —
+	// the URL Assay asked for. It is recorded alongside URL so an auditor can
+	// see whether a claim came from the requested host or from somewhere a
+	// redirect moved it to, which URL alone cannot express. On a failed fetch
+	// it equals URL (the request never produced a final location).
+	//
+	// It is deliberately OUTSIDE the evidence_hash preimage, which renders only
+	// Source/URL/Claim: adding it must not change the hash of a report whose
+	// claim did not change, or every existing attestation would stop
+	// reproducing. A future encoding may bind it; that would be a version bump.
 	RequestedURL string `json:"requested_url,omitempty"`
 	Claim        string `json:"claim"`
-	// RetrievedAt is when this specific fact was observed from the source
-	// (or when the attempt was made, if the fetch failed).
+	// RetrievedAt is when this specific fact was observed from the source (or
+	// when the attempt was made, if the fetch failed).
 	//
 	// Clock source: scanner host wall clock (time.Now().UTC()).
 	// Precision: nanoseconds in memory (time.Time); on the wire it marshals
@@ -164,7 +179,12 @@ type Finding struct {
 	MechanicNames []string `json:"mechanics"`
 	// Accountability is set only by the check that establishes it.
 	Accountability *Accountability `json:"accountability,omitempty"`
-	Evidence       []Evidence      `json:"evidence"`
+	// AccountabilityReason classifies why the accountability verdict was
+	// reached, so consumers can distinguish "could not fetch" from "fetched
+	// but not claimed" from JSON alone. Absent when the check did not
+	// classify the verdict (for example a verified claim).
+	AccountabilityReason *AccountabilityReason `json:"accountability_reason,omitempty"`
+	Evidence             []Evidence            `json:"evidence"`
 }
 
 // Subject is the pre-fetched state a check reasons over. Checks must not reach
@@ -234,6 +254,23 @@ type Subject struct {
 	// severity: a report that could not run the lookup must not read as one
 	// that ran it and found nothing.
 	BlockedSkipped string
+
+	// ExpertAsset is StellarExpert's asset-level metadata (supply, trustline
+	// counters and the published rating) when it could be retrieved.
+	// ExpertAssetErr records why it could not, and ExpertAssetURL attributes
+	// either statement to the exact endpoint that made it. It is best-effort:
+	// an outage leaves ExpertAsset nil with a non-empty Err, the reputation
+	// check reports the gap as undetermined, and the scan itself still
+	// succeeds. The values are descriptive source data, never an Assay score,
+	// so they are evidence only and are not consulted by the severity rules.
+	//
+	// FetchedAt is when the endpoint answered; AttemptedAt is when it was
+	// asked, for failure evidence, which has no completion time to carry.
+	ExpertAsset            *stellarexpert.Asset
+	ExpertAssetURL         string
+	ExpertAssetErr         string
+	ExpertAssetFetchedAt   time.Time
+	ExpertAssetAttemptedAt time.Time
 
 	// AssetLists are the SEP-0042 curated lists consulted for this asset, one
 	// entry per configured list, in configuration order. Empty when no list is
@@ -398,6 +435,10 @@ type Report struct {
 
 	// Accountability is reported alongside severity, never folded into it.
 	Accountability Accountability `json:"accountability"`
+	// AccountabilityReason classifies why the accountability verdict was
+	// reached. It is report metadata, not part of the hashed evidence
+	// preimage; see docs/contract-interface.md for the encoding decision.
+	AccountabilityReason *AccountabilityReason `json:"accountability_reason,omitempty"`
 
 	// State is the overall verdict state of the report:
 	//   - "valid": a fresh, complete verdict.
@@ -470,16 +511,26 @@ type Report struct {
 	// carry the fact that it was produced under identity binding.
 	ScannerBound bool `json:"scanner_bound,omitempty"`
 
-	Mechanics     Mechanic      `json:"-"`
-	MechanicNames []string      `json:"mechanics"`
-	Findings      []Finding     `json:"findings"`
-	Evidence      []Evidence    `json:"evidence"`
-	ScannedAt     CanonicalTime `json:"scanned_at"`
+	Mechanics     Mechanic   `json:"-"`
+	MechanicNames []string   `json:"mechanics"`
+	Findings      []Finding  `json:"findings"`
+	Evidence      []Evidence `json:"evidence"`
 
 	// ObservationWindowStart is the start of the observation window for this report.
 	ObservationWindowStart time.Time `json:"observation_window_start,omitempty"`
 	// ObservationWindowEnd is the end of the observation window for this report.
 	ObservationWindowEnd time.Time `json:"observation_window_end,omitempty"`
+	// ScannedAt is when the scan run started (the Subject.ScannedAt timestamp).
+	// It is the report-level timestamp.
+	//
+	// Clock source: scanner host wall clock (time.Now().UTC()).
+	// Precision: nanoseconds in memory (time.Time), formatted as RFC 3339 in JSON.
+	//
+	// Because individual sources are fetched sequentially over an outer context
+	// timeout of up to 30 seconds, ScannedAt is an approximation across the
+	// sequential fetch window; individual Evidence items carry their own
+	// RetrievedAt completion times. See docs/timestamps.md.
+	ScannedAt CanonicalTime `json:"scanned_at"`
 }
 
 // Engine runs a set of checks over a Subject.
@@ -542,14 +593,14 @@ func (e *Engine) Run(ctx context.Context, s *Subject) (*Report, error) {
 	rep := &Report{
 		SchemaVersion:        ReportSchemaVersion,
 		Asset:                s.Asset,
-		Network:              s.Network,
 		Accountability:       AccountabilityUnknown,
-		ScannedAt:            NewCanonicalTime(scannedAt),
+		ScannedAt:            CanonicalTime(scannedAt),
+		Network:              s.Network,
 		CheckSet:             e.CheckIDs(),
 		Findings:             []Finding{},
 		Evidence:             []Evidence{},
 		UndeterminedChecks:   []string{},
-		UndeterminedBySource: map[string]int{},
+		UndeterminedBySource: make(map[string]int),
 	}
 
 	totalChecks := len(e.Checks)
@@ -586,6 +637,9 @@ func (e *Engine) Run(ctx context.Context, s *Subject) (*Report, error) {
 
 		if f.Accountability != nil {
 			rep.Accountability = *f.Accountability
+		}
+		if f.AccountabilityReason != nil {
+			rep.AccountabilityReason = f.AccountabilityReason
 		}
 		// The escalation invariant, enforced here rather than left as
 		// convention: a finding marked Escalation may raise the level and set

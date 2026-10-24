@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -31,71 +30,11 @@ import (
 	"github.com/use-assay/assay/internal/scan"
 )
 
-const (
-	exitSuccess     = 0
-	exitGeneric     = 1
-	exitUsage       = 2
-	exitMissing     = 3
-	exitUnavailable = 4
-	exitUnknown     = 5
-)
-
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "assay:", err)
 		os.Exit(exitCodeForError(err))
 	}
-}
-
-func exitCodeForError(err error) int {
-	if err == nil {
-		return exitSuccess
-	}
-	// The native asset ("native" or "XLM", any case) is an input Assay
-	// understands and deliberately refuses, not one it fails to parse: the
-	// ledger gives it no issuer account, so there are no authorization flags
-	// to read and nothing to scan or attest. It is grouped with the other
-	// arguments these commands refuse (exit 2) so a script can tell "this
-	// identifier will never scan" from a transient failure without parsing
-	// stderr. Matched with errors.Is rather than the message text below, so
-	// wrapping or rewording cannot silently move it to another code.
-	// Documented in docs/cli.md.
-	if errors.Is(err, scan.ErrNativeAsset) {
-		return exitUsage
-	}
-	s := err.Error()
-	if strings.Contains(s, "unknown command") ||
-		strings.Contains(s, "no command given") ||
-		strings.Contains(s, "takes exactly one asset") ||
-		strings.Contains(s, "invalid asset") ||
-		strings.Contains(s, "expected asset") ||
-		strings.Contains(s, "bad request") ||
-		strings.Contains(s, "parse") ||
-		strings.Contains(s, "unknown preimage version") ||
-		strings.Contains(s, "flag provided but not defined") ||
-		strings.Contains(s, "invalid value") {
-		return exitUsage
-	}
-	if strings.Contains(s, "not found") ||
-		strings.Contains(s, "no such asset") ||
-		strings.Contains(s, "does not exist") {
-		return exitMissing
-	}
-	if strings.Contains(s, "timeout") ||
-		strings.Contains(s, "connection refused") ||
-		strings.Contains(s, "no route to host") ||
-		strings.Contains(s, "upstream") ||
-		strings.Contains(s, "network") ||
-		strings.Contains(s, "http") ||
-		strings.Contains(s, "exhausted") {
-		return exitUnavailable
-	}
-	if strings.Contains(s, "undetermined") ||
-		strings.Contains(s, "unevaluated") ||
-		strings.Contains(s, "inconsistent") {
-		return exitUnknown
-	}
-	return exitGeneric
 }
 
 // commandDeps are the process-level dependencies the subcommands use. They are
@@ -109,7 +48,7 @@ type commandDeps struct {
 	stderr io.Writer
 	// scan fetches and classifies one asset. It is injected so tests never
 	// touch the network.
-	scan func(context.Context, mechanics.Asset, []string) (*mechanics.Report, error)
+	scan func(context.Context, mechanics.Asset) (*mechanics.Report, error)
 	// serve starts the HTTP API. It is injected so dispatch can be tested
 	// without binding a port.
 	serve func([]string, *slog.Logger) error
@@ -120,8 +59,8 @@ func defaultDeps() commandDeps {
 	return commandDeps{
 		stdout: os.Stdout,
 		stderr: os.Stderr,
-		scan: func(ctx context.Context, a mechanics.Asset, lists []string) (*mechanics.Report, error) {
-			return newScanner(lists).Scan(ctx, a)
+		scan: func(ctx context.Context, a mechanics.Asset) (*mechanics.Report, error) {
+			return scan.New().Scan(ctx, a)
 		},
 		serve: runServe,
 	}
@@ -145,6 +84,8 @@ func usage(w io.Writer) {
                                   (CODE-ISSUER or SAC address), bounded by RPC event retention
   assay serve [-addr] [-history PATH]
                                   serve the HTTP API and UI
+  assay version                   print scanner identity, preimage encodings
+                                  and build (VCS, Go) information
 
 Commands that scan also accept:
   -cache-directory-ttl D   reuse a curated directory answer for D (0 disables)
@@ -178,7 +119,7 @@ func run(args []string) error { return runWith(args, defaultDeps()) }
 func runWith(args []string, d commandDeps) error {
 	if len(args) == 0 {
 		usage(d.stderr)
-		return fmt.Errorf("no command given")
+		return usagef("no command given")
 	}
 
 	log := slog.New(slog.NewTextHandler(d.stderr, nil))
@@ -198,9 +139,14 @@ func runWith(args []string, d commandDeps) error {
 		return runRegistryHistory(args[1:], d)
 	case "serve":
 		return d.serve(args[1:], log)
+	case "version", "-version", "--version":
+		// The identity form works both as a subcommand and as the
+		// conventional top-level flag, so `assay version`, `assay -version`
+		// and `assay --version` all answer the same thing.
+		return runVersion(args[1:], d)
 	default:
 		usage(d.stderr)
-		return fmt.Errorf("unknown command %q", args[0])
+		return usagef("unknown command %q", args[0])
 	}
 }
 
@@ -211,11 +157,11 @@ func runScan(args []string, d commandDeps) error {
 		"save every upstream response into DIR for later -replay")
 	replayDir := fs.String("replay", "",
 		"serve every upstream response from a recording made with -record")
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("scan: %w", err)
+	if err := parseFlags(fs, args); err != nil {
+		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("scan takes exactly one asset (CODE-ISSUER)")
+		return usagef("scan takes exactly one asset (CODE-ISSUER)")
 	}
 	asset, err := scan.ParseAsset(fs.Arg(0))
 	if err != nil {
@@ -305,9 +251,7 @@ func wireTransport(s *scan.Scanner, rt http.RoundTripper) {
 // scanner configured to consult them.
 func scanFuncFor(lists []string, d commandDeps) func(context.Context, mechanics.Asset) (*mechanics.Report, error) {
 	if len(lists) == 0 {
-		return func(ctx context.Context, asset mechanics.Asset) (*mechanics.Report, error) {
-			return d.scan(ctx, asset, lists)
-		}
+		return d.scan
 	}
 	return newScanner(lists).Scan
 }
@@ -377,11 +321,11 @@ func runAttestation(args []string, d commandDeps) error {
 		"render the preimage under this encoding: v1, v2, v3, v4 or a full assay-evidence-vN line (default: the one the report binds)")
 	bundleOut := fs.String("bundle", "",
 		"also write an offline verification bundle (raw source bytes, report, preimage, digest) to this path")
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("attestation: %w", err)
+	if err := parseFlags(fs, args); err != nil {
+		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("attestation takes exactly one asset (CODE-ISSUER)")
+		return usagef("attestation takes exactly one asset (CODE-ISSUER)")
 	}
 	// The encoding is validated before the live scan: a mistyped version is a
 	// usage error, and discovering it after a 30-second fetch would waste the
@@ -396,35 +340,26 @@ func runAttestation(args []string, d commandDeps) error {
 		return fmt.Errorf("attestation: %w", err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	scanFn := scanFuncFor(assetLists(), d)
 	finish := func() {}
 	recordingDir := ""
 	if *bundleOut != "" {
-		recordingDir, err = os.MkdirTemp("", "assay-bundle-*")
+		dir, err := os.MkdirTemp("", "assay-bundle-*")
 		if err != nil {
 			return fmt.Errorf("create bundle recording directory: %w", err)
 		}
-		defer func() {
-			if err := os.RemoveAll(recordingDir); err != nil {
-				_, _ = fmt.Fprintln(d.stderr, "assay: bundle recording directory not removed:", err)
-			}
-		}()
+		defer func() { _ = os.RemoveAll(dir) }()
+		recordingDir = dir
+		// Record into a private directory first; the archive is written only
+		// after the report is derived, so a failed scan leaves no half bundle.
 		scanFn, finish, err = scanFuncForRecording(assetLists(), d, recordingDir, "")
 		if err != nil {
 			return err
 		}
 	}
-	finished := false
-	finishRecording := func() {
-		if !finished {
-			finish()
-			finished = true
-		}
-	}
-	defer finishRecording()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	report, err := scanFn(ctx, asset)
 	if err != nil {
@@ -442,7 +377,7 @@ func runAttestation(args []string, d commandDeps) error {
 		// Close the recording before packaging: the manifest and bodies are
 		// written by Close, and a bundle built from a still-open recorder would
 		// be missing every response.
-		finishRecording()
+		finish()
 		if err := bundle.Write(*bundleOut, report, params, recordingDir); err != nil {
 			return fmt.Errorf("write verification bundle %s: %w", *bundleOut, err)
 		}
@@ -489,11 +424,11 @@ func runHistory(args []string, d commandDeps) error {
 	assetLists := assetListFlags(fs)
 	guarantee := fs.Bool("guarantee", false, "exit non-zero when there is no history")
 	raw := fs.Bool("raw", false, "print only the history, tab-separated, for scripting")
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("history: %w", err)
+	if err := parseFlags(fs, args); err != nil {
+		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("history takes exactly one asset (CODE-ISSUER)")
+		return usagef("history takes exactly one asset (CODE-ISSUER)")
 	}
 
 	asset, err := scan.ParseAsset(fs.Arg(0))
@@ -504,7 +439,7 @@ func runHistory(args []string, d commandDeps) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	report, err := d.scan(ctx, asset, assetLists())
+	report, err := scanFuncFor(assetLists(), d)(ctx, asset)
 	if err != nil {
 		return err
 	}
@@ -601,8 +536,8 @@ func runServe(args []string, log *slog.Logger) error {
 	addr := fs.String("addr", ":8080", "listen address")
 	historyPath := fs.String("history", "",
 		"path to the observation history log (JSON Lines); empty keeps history in memory only")
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("serve: %w", err)
+	if err := parseFlags(fs, args); err != nil {
+		return err
 	}
 
 	// The server is where a list configuration matters most: every scan it

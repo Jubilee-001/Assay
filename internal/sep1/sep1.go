@@ -37,17 +37,28 @@ const version = "v0.1.0"
 // asked for more than this, rather than assuming it.
 const MaxBody = 1 << 20 // 1 MiB
 
-// Failure labels are stable, host-independent categories for source errors.
-const (
-	FailureConnectionRefused = "connection-refused"
-	FailureDNS               = "dns-failure"
-	FailureTimeout           = "timeout"
-	FailureHostRefused       = "host-refused"
-	FailureFetch             = "fetch-failure"
-)
-
-// MaxRedirects bounds how many redirects a stellar.toml fetch may follow.
+// MaxRedirects bounds how many redirects the fetcher will follow before
+// giving up. It is set explicitly rather than inherited from net/http's default
+// of 10, because the number is part of the security argument: a redirect chain
+// is attacker-controlled, and an unbounded one lets a hostile home_domain keep
+// the scanner chasing hops (or keep rewriting the final URL the claim is
+// attributed to). Five is enough for the ordinary cases — an http-to-https
+// upgrade, a trailing-slash or path-normalization hop, an apex-to-www move —
+// and small enough to read in one place.
 const MaxRedirects = 5
+
+const (
+	// FailureConnectionRefused identifies a refused TCP connection.
+	FailureConnectionRefused = "connection-refused"
+	// FailureDNS identifies a DNS resolution failure.
+	FailureDNS = "dns-failure"
+	// FailureTimeout identifies a transport timeout.
+	FailureTimeout = "timeout"
+	// FailureHostRefused identifies a host-policy refusal.
+	FailureHostRefused = "host-refused"
+	// FailureFetch identifies other fetch failures.
+	FailureFetch = "fetch-failure"
+)
 
 // MaxLinkedDocuments bounds how many per-currency TOML links Assay follows for
 // a single issuer stellar.toml. SEP-0001 allows a CURRENCIES entry to carry
@@ -424,7 +435,7 @@ func (f *Fetcher) ResolveLinked(ctx context.Context, d *Doc, code, issuer string
 		res.Attempted++
 		doc, err := f.fetch(ctx, link)
 		if err != nil {
-			ld := LinkedDoc{URL: link, Err: err.Error(), Refused: errors.Is(err, ErrNonPublicHost)}
+			ld := LinkedDoc{URL: link, Err: CanonicalFailure(err), Refused: errors.Is(err, ErrNonPublicHost)}
 			res.Docs = append(res.Docs, ld)
 			continue
 		}
@@ -602,7 +613,7 @@ func (f *Fetcher) fetch(ctx context.Context, target string) (*Doc, error) {
 
 	resp, err := f.HTTP.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("sep1: fetch %s: %w", target, err)
+		return nil, fmt.Errorf("sep1: %s: fetch %s: %w", CanonicalFailure(err), target, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
