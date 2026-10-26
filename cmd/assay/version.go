@@ -114,7 +114,6 @@ func writeVersion(w io.Writer, s buildSettings) error {
 		s.VCSModified,
 	)
 	if err != nil {
-		return fmt.Errorf("version: write output: %w", err)
 		return fmt.Errorf("write version: %w", err)
 	}
 	return nil

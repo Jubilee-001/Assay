@@ -53,7 +53,7 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 			// identity for errors.Is and leaves its text unchanged.
 			return fmt.Errorf("%w", err)
 		}
-		return usagef("%s: parse flags: %w", fs.Name(), err)
+		return usagef("%s: %w", fs.Name(), err)
 	}
 	return nil
 }
