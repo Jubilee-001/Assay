@@ -49,6 +49,8 @@ func usagef(format string, a ...any) error {
 func parseFlags(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			// Wrapped at this package boundary; %w keeps flag.ErrHelp's
+			// identity for errors.Is and leaves its text unchanged.
 			return fmt.Errorf("%w", err)
 		}
 		return usagef("%s: parse flags: %w", fs.Name(), err)

@@ -63,6 +63,11 @@ func ScanFiles(paths []string) ([]Finding, error) {
 		found, err := ScanText(f, path)
 		if cerr := f.Close(); cerr != nil {
 			return nil, fmt.Errorf("secret-scan: close %s: %w", path, cerr)
+			return nil, fmt.Errorf("open %s: %w", path, err)
+		}
+		found, err := ScanText(f, path)
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close %s: %w", path, closeErr)
 		}
 		if err != nil {
 			return nil, err
@@ -85,6 +90,7 @@ func ScanText(r io.Reader, name string) ([]Finding, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("secret-scan: scan %s: %w", name, err)
+		return nil, fmt.Errorf("scan %s: %w", name, err)
 	}
 	return findings, nil
 }
@@ -120,6 +126,7 @@ func ScanDiff(r io.Reader) ([]Finding, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("secret-scan: scan diff: %w", err)
+		return nil, fmt.Errorf("scan diff: %w", err)
 	}
 	return findings, nil
 }
